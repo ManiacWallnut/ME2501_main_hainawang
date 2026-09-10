@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+
+# Downloaded raw datasets
+data/
+
+# Local wheel cache used while setting up the environment (see README)
+wheels/
+
+# Generated artifacts (figures under outputs/figures/ ARE tracked)
+outputs/checkpoints/
+outputs/data/
+outputs/logs/
+
+# LaTeX build artifacts
+writeup/*.aux
+writeup/*.log
+writeup/*.out
+writeup/*.synctex.gz
+
+# Misc
+.DS_Store
+pi-llm-debug.log
+
+# agent tooling
+.pal/
