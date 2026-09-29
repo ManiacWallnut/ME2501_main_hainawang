@@ -1,0 +1,469 @@
+\documentclass[11pt]{article}
+\usepackage[margin=0.82in]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs}
+\usepackage{graphicx}
+\usepackage{float}
+\usepackage{placeins}
+\usepackage[hidelinks]{hyperref}
+\usepackage{xcolor}
+
+\graphicspath{{../outputs/figures/}}
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{0.55em}
+\setlength{\tabcolsep}{5pt}
+\newcommand{\todo}[1]{\textcolor{red}{\textbf{TODO: #1}}}
+\newcommand{\E}{\mathbb{E}}
+\newcommand{\R}{\mathbb{R}}
+
+\title{ME2501 --- Assignment 1\\Exploring Dictionary Learning}
+\author{Haina Wang, 260010205 }
+\date{Fall 2026}
+
+\begin{document}
+\maketitle
+
+\paragraph{Repository.}
+\todo{Insert the URL of the private repository in the
+\texttt{hku-data8014-students} organization.}
+
+\section{Implementation and experimental protocol}
+
+I added a NumPy/SciPy package, \texttt{data8014/dictlearn}, containing the
+synthetic generators, recovery and validation metrics, ISTA/FISTA, MSP,
+alternating minimization, convergence fitting, and MNIST PCA/whitening.  Thin
+experiment drivers in \texttt{scripts/dl\_part*.py} write incremental JSONL
+logs and regenerate figures from those logs.  Part 3 uses \texttt{float32};
+the synthetic experiments use \texttt{float64}.  Unit tests check moments and
+dictionary constraints, sign/permutation invariance, the exact one-step ISTA
+solution for an orthogonal dictionary, step-size calculations, and the Part 4
+variance construction.
+
+Unless otherwise stated, reported uncertainty is the sample standard deviation
+across independent seeds.  I used five seeds in Parts 0--2 and 4 and three
+seeds in the more expensive MNIST experiments.  For recovery I primarily use
+(3), report duplicate matches, and additionally log a Hungarian one-to-one
+score.  Thus a collapsed dictionary cannot silently appear as successful.
+Validation codes are always inferred from held-out samples.  In the complete
+case, because every MSP iterate is orthogonal, ISTA from zero gives the exact
+LASSO solution in one step,
+\[
+  \widehat Z=\operatorname{soft}(X_{\rm val}\widehat A^\top,\lambda/2).
+\]
+
+My MSP update is
+\[
+ A_{t+1}=\mathcal P_{O(D)}\!\left(
+       ((XA_t^\top)^{\circ 3})^\top X\right),
+\]
+where the polar projection is computed by an SVD.  One alternating-minimization
+block consists of 30 warm-started ISTA steps, one dictionary-gradient step,
+and row normalization.  I recompute
+$\eta=(2\|A\|_2^2)^{-1}$ and $\nu=(2\|Z\|_2^2)^{-1}$ in every block.
+
+\section{Part 0: setup and warm-ups}
+
+\subsection{Generator, metrics, and MSP sanity check}
+
+For the Bernoulli--Gaussian generator I draw
+$z_k=b_kg_k$, $b_k\sim\mathrm{Bern}(\theta)$ and
+$g_k\sim\mathcal N(0,1/\theta)$.  Complete dictionaries are QR factors;
+overcomplete dictionaries have independently drawn, unit-normalized rows.
+With the prescribed MSP sanity setting, all five seeds recovered every atom to
+$s_k>0.99$ in 6--8 one-based iterations.  Final minimum correlations ranged
+from 0.9986 to 0.9993.
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=0.82\linewidth]{dl_part0_sanity_msp.png}
+  \caption{MSP sanity check.  The minimum atom correlation exceeds 0.99 well
+  before the 30-iteration reference budget for every seed.}
+\end{figure}
+
+\subsection{ISTA convergence}
+
+For the fixed ground-truth overcomplete dictionary, the smooth term has
+Lipschitz constant $L=2\|A\|_2^2$.  The plotted worst-case proximal-gradient
+bound is
+\[
+ f(Z_k)-f^\star\leq \frac{L\|Z_0-Z^\star\|_F^2}{2k}.
+\]
+I estimated $f^\star=8814.0855168404$ by a long FISTA run.  The solution has
+8273 nonzero entries out of 64000.  ISTA permanently identifies this entrywise
+support at iteration 2273; after that, the fitted geometric factor is
+$\rho=0.99783$ per iteration.  The eventual geometric behavior is faster than
+the generic $O(1/k)$ guarantee.  The bound does not use the finite active-set
+structure: after signs and support stabilize, soft thresholding is affine and
+the remaining iteration is a linear contraction on the active coordinates.
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=0.95\linewidth]{dl_part0_warmup_ista.png}
+  \caption{ISTA objective gap against the worst-case convex bound (left) and
+  the geometric tail after support identification (right).}
+\end{figure}
+
+\subsection{Why orthogonality costs no generality}
+
+Let a noiseless complete model have an arbitrary invertible $A$ and
+$x=A^\top z$.  Since the coordinates of $z$ have unit variance,
+\[
+ \Sigma_x=\E[xx^\top]=A^\top A.
+\]
+With the symmetric whitening matrix $W=\Sigma_x^{-1/2}$, transform row samples
+as $\bar X=XW$ and define $\bar A=AW$.  Then
+\[
+ \bar A^\top\bar A=W^\top A^\top A W=I.
+\]
+Because $\bar A$ is square, it is orthogonal.  Learning the whitened model
+$\bar X=Z\bar A$ therefore loses no information: the original dictionary is
+$A=\bar A W^{-1}$.  In finite samples I use the empirical covariance; this
+argument requires the stipulated invertibility and zero-noise setting.
+
+\section{Part 1: convergence and sample-size scaling}
+
+\subsection{Optimization convergence (T-axis)}
+
+I used $D=16$, $N=8000$, $\theta=0.1$, $\sigma=0$, $\lambda=0.6$, and five
+seeds.  Both metrics reach their finite-sample/LASSO plateaus near $T=12$.
+To avoid fitting the plateau as if it were decay, I estimated a tail floor and
+fit only the positive transient above it.  Table~\ref{tab:p1t} compares the
+mean-curve fits; the per-seed parameter spread is also shown.
+
+\begin{table}[H]
+\centering
+\caption{Part 1(a) floor-aware transient fits.  Larger $R^2$ is better.}
+\label{tab:p1t}
+\begin{tabular}{lrrrrrr}
+\toprule
+Metric & floor & power $\alpha$ & $R^2$ & exp. $\rho$ & $R^2$ & per-seed $\rho$ \\
+\midrule
+Recovery error & $3.61\!\times\!10^{-4}$ & 4.307 & .592 & .350 & .799 & $.210\pm.126$ \\
+Eval loss      & .1470 & 4.957 & .608 & .324 & .814 & $.257\pm.098$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The exponential model is more consistent with both measured transients, but
+$R^2\approx0.8$ and the short, very rapid approach to a floor mean that neither
+simple law is a complete global description.  Recovery tends to zero up to
+finite-sample error, whereas the eval loss retains a nonzero LASSO shrinkage
+floor, so the raw metrics do not share the same asymptote.
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=0.93\linewidth]{dl_part1a_msp_convergence.png}
+  \caption{Part 1(a): held-out and recovery errors on semilogy and log--log
+  axes.  Bands show one standard deviation over five seeds.}
+\end{figure}
+
+\subsection{Sample-size scaling (N-axis)}
+
+For each seed I drew the $N=10000$ dataset once and used prefixes, holding the
+true dictionary, initialization, and validation data fixed.  I stopped using a
+signed/permuted iterate-stationarity criterion rather than ground-truth
+recovery.  All 45 runs converged before the cap (maximum 126 iterations).
+The first six of nine $N$ values were fit and $N=10000$ was predicted.
+
+\begin{table}[H]
+\centering
+\caption{Part 1(b) fits of $\mathcal E-\mathcal E_\infty=cN^{-\beta}$.}
+\begin{tabular}{lrrrr}
+\toprule
+Metric & mean-curve $\beta$ & $R^2$ & per-seed $\beta$ & target relative error \\
+\midrule
+Recovery error & 1.285 & .936 & $1.212\pm.192$ & 16.1\% \\
+Eval excess    & .472 & .907 & $.463\pm.077$ & 207\% \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The raw eval-loss prediction error is only 13.9\%, but this is misleading
+because the estimated floor $\mathcal E_\infty=0.13673$ dominates.  Relative to
+the quantity actually fit, $\mathcal E-\mathcal E_\infty$, the extrapolation
+error is 207\%.  Thus recovery is reasonably compatible with a power law over
+the measured range, while eval-excess extrapolation is not stable enough to
+support the same claim despite its in-range $R^2$.
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=0.9\linewidth]{dl_part1b_msp_sample_size.png}
+  \caption{Part 1(b): converged recovery error and held-out excess loss versus
+  sample count.}
+\end{figure}
+\FloatBarrier
+
+\section{Part 2: density and identifiability}
+
+\subsection{Cost and transition}
+
+For $\theta\in\{.2,.4,.6,.7,.8,.85\}$, the mean $T_\star$ values were
+$8.0$, $9.8$, $17.8$, $26.6$, $48.0$, and $88.0$; their standard deviations
+were $2.55$, $1.79$, $1.30$, $8.17$, $4.85$, and $16.51$, respectively.  No
+run was censored.  After recording the first-passage time, I continued each
+run to iterate stationarity before evaluating its held-out loss.  Density
+therefore causes a large and increasingly variable optimization cost.
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=0.72\linewidth]{dl_part2_Tstar_vs_theta.png}
+  \caption{Iterations required to recover at least 95\% of atoms above 0.9.}
+\end{figure}
+
+At higher density the mean recovered fractions were
+\[
+\begin{array}{c|rrrrrrr}
+\theta & .88 & .90 & .91 & .92 & .93 & .95 & 1.00\\ \hline
+\text{fraction} & .9875 & .9375 & .4875 & .175 & .075 & 0 & 0\\
+\text{std.} & .028 & .088 & .277 & .103 & .052 & 0 & 0
+\end{array}
+\]
+All runs reached iterate stationarity before the 20000-iteration cap.  The
+sharp fall between .90 and .92 is evidence of a finite-sample/algorithmic
+phase transition.  In contrast, converged held-out loss rises smoothly: its
+mean is .2815 at $\theta=.2$, 1.1709 at .90, 1.1935 at .91, 1.2043 at .92,
+and 1.2118 at 1.  There is no loss discontinuity corresponding to the recovery
+collapse, so reconstruction is not an identifiability diagnostic.
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=0.95\linewidth]{dl_part2_transition.png}
+  \caption{Part 2 transition.  Recovery changes sharply while held-out
+  reconstruction loss changes smoothly.}
+\end{figure}
+
+\subsection{Why the transition occurs}
+
+For $z=bg$, $b\sim\mathrm{Bern}(\theta)$ and
+$g\sim\mathcal N(0,1/\theta)$,
+\[
+ \E[z^2]=\theta\frac1\theta=1,\qquad
+ \E[z^4]=\theta\,3\left(\frac1\theta\right)^2=\frac3\theta,
+ \qquad \kappa(\theta)=3\left(\frac1\theta-1\right).
+\]
+At the observed transition center $\theta=.91$, $\kappa\approx.297$; at
+$\theta=1$, $\kappa=0$.
+
+At $\theta=1$, $z\sim\mathcal N(0,I)$.  For every orthogonal $R$, set
+$Z'=ZR^\top$ and $A'=RA$.  Then $Z'A'=ZA$, while rotational invariance gives
+$Z'\stackrel{d}{=}Z$.  Infinitely many dictionaries therefore induce the same
+data law.  MSP's fourth-power objective exploits coordinate-wise non-Gaussian
+kurtosis: sparse directions produce unusually large fourth moments when the
+iterate aligns with the independent components.  As $\theta\to1$, the excess
+kurtosis and hence this directional contrast vanish.  The smooth loss remains
+small because a rotated Gaussian representation reconstructs just as well.
+
+\section{Part 3: MNIST}
+
+\subsection{Spectrum, projection, and whitening}
+
+I centered the MNIST training images, diagonalized their pixel covariance,
+and used $k=32$.  The 80\%, 90\%, and 99\% variance thresholds require 44, 87,
+and 331 components, respectively, so $k=32$ deliberately trades retained
+variance for computational cost.  I divided each projected coordinate by the
+square root of its training eigenvalue.  The resulting relative covariance
+error was
+$\|\widehat\Sigma_y-I\|_F/\|I\|_F=2.77\times10^{-7}$.
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=0.78\linewidth]{dl_part3_spectrum.png}
+  \caption{MNIST covariance spectrum and cumulative explained variance.}
+\end{figure}
+
+\subsection{T-axis}
+
+I trained on $N=12000$ images for 400 blocks with $\lambda=2$ and evaluated on
+a fixed, unused set of 2000 test images.  Table~\ref{tab:p3t} reports the final
+mean and standard deviation.
+
+\begin{table}[H]
+\centering
+\caption{Part 3 T-axis results after 400 blocks (three seeds).}
+\label{tab:p3t}
+\begin{tabular}{lrrrr}
+\toprule
+$m$ & held-out loss & random loss & learned/random & code nnz fraction \\
+\midrule
+64  & $10.1889\pm.0098$ & $15.9189\pm.3085$ & $.6402\pm.0128$ & $.13050\pm.00084$ \\
+128 & $7.9752\pm.0238$  & $11.8963\pm.0640$ & $.6704\pm.0043$ & $.07403\pm.00040$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Floor-aware held-out fits favored exponential decay: for $m=64$,
+$\rho=.9789$ with $R^2=.954$ versus power $R^2=.841$; for $m=128$,
+$\rho=.9850$ with $R^2=.822$ versus power $R^2=.774$.  Training-objective
+exponential fits had $R^2=.938$ and .941.  Thus the real-data overcomplete
+problem also has an approximately geometric transient, but it relaxes over
+hundreds of blocks rather than MSP's roughly twelve iterations, and the late
+curves are dominated by a floor and small nonmonotonic fluctuations.
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=0.94\linewidth]{dl_part3_taxis.png}
+  \caption{MNIST T-axis, with one-standard-deviation bands and random-dictionary
+  held-out baselines.}
+\end{figure}
+
+\subsection{N-axis}
+
+For each seed I fixed an image ordering and used prefixes at the seven required
+sample counts.  I fit the smallest five values with a free asymptotic floor and
+predicted $N=12800$.
+
+\begin{table}[H]
+\centering
+\caption{MNIST sample-size fits and diagnostics.}
+\begin{tabular}{lrrrrr}
+\toprule
+$m$ & $\beta$ & per-seed $\beta$ & $R^2$ & prediction error & capped runs \\
+\midrule
+64  & .558 & $.555\pm.155$ & .9999 & 1.22\% & 3/21 \\
+128 & .485 & $.494\pm.184$ & .9996 & 1.54\% & 12/21 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The large $R^2$ and small target errors support a floor-plus-power description
+on these points, but 15 of 42 runs reached the permitted 1000-block cap rather
+than the $10^{-5}$ stopping criterion.  This is especially important for
+$m=128$ and limits precision.  The synthetic eval exponent was
+$.463\pm.077$ per seed.  The $m=128$ MNIST exponent is nearly identical and
+$m=64$ is modestly steeper, but the MNIST across-seed standard deviations are
+large enough that this difference is not decisive.  At $N=12800$, the
+learned/random ratios were $.6408\pm.0129$ and $.6711\pm.0033$, and code nnz
+fractions were $.13063\pm.00025$ and $.07421\pm.00014$, confirming learning
+relative to the random baseline.
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=0.9\linewidth]{dl_part3_naxis.png}
+  \caption{MNIST N-axis fits; triangular markers identify capped runs.}
+\end{figure}
+
+\subsection{Atoms}
+
+To visualize an atom $a$ in whitened PCA coordinates, I applied the inverse
+linear transform
+\[
+ a_{\rm pixel}=a\,\mathrm{diag}(\sqrt{\lambda_1},\ldots,
+ \sqrt{\lambda_k})V_k^\top.
+\]
+I did not add the data mean to a direction.
+Both dictionaries contain recognizable digit and stroke templates.  The
+$m=128$ dictionary contains more writing-style variants and near-duplicate
+parts.  Greater overcompleteness lowers absolute held-out loss and makes codes
+sparser, while individual atoms remain interpretable.
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=0.49\linewidth]{dl_part3_atoms_m64.png}\hfill
+  \includegraphics[width=0.49\linewidth]{dl_part3_atoms_m128.png}
+  \caption{Inverse-whitened MNIST atoms for $m=64$ (left) and $m=128$ (right).}
+\end{figure}
+\FloatBarrier
+
+\section{Part 4 (bonus): spectral bias}
+
+\subsection{Derivation and generator check}
+
+Since $\E[b_kg_k]=0$ and coordinates are independent,
+\[
+ \E[z]=0,\qquad \E[zz^\top]=\operatorname{diag}(p_1v_1,\ldots,p_mv_m)
+ =\operatorname{diag}(\tau_1,\ldots,\tau_m).
+\]
+Consequently, for $x=A^\top z+\epsilon$,
+\[
+ \operatorname{Cov}(x)=A^\top\operatorname{diag}(\tau_k)A+\sigma^2I.
+\]
+If the rows $a_k^\top$ of square $A$ are orthonormal, then
+$\operatorname{Cov}(x)a_k=(\tau_k+\sigma^2)a_k$: each atom is an eigenvector
+with eigenvalue $\tau_k+\sigma^2$.
+
+Here $p_k=ck^{-\alpha}$ and $v_k=1$, so expected sparsity is
+$\sum_{k=1}^m p_k=c\sum_{k=1}^m k^{-\alpha}$, which decreases with $\alpha$
+(for all $k>1$).  For $m=16,c=.45$, its values are 2.079, 1.521, and 1.175 at
+$\alpha=.75,1,1.25$.  If instead $v_k=1/p_k$, then $\tau_k=1$ and every signal
+eigenvalue is equal.  This explains why the variance-normalized Part 0
+generator cannot test spectral bias.  The empirical coordinate variances in
+Figure~\ref{fig:p4var} track the intended unequal $\tau_k$.
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=0.7\linewidth]{dl_part4_variances.png}
+  \caption{Empirical code variances for five seeds at $\alpha=1$.}
+  \label{fig:p4var}
+\end{figure}
+
+\subsection{Recovery ordering and algorithm dependence}
+
+With alternating minimization, high-energy atoms are generally recovered
+first and the separation strengthens as $\alpha$ increases.  Seed variation
+is visible but smaller than the overall high-to-low-energy trend.  Unrecovered
+atoms are shown above the budget line.
+
+\begin{table}[H]
+\centering
+\caption{Part 4 recovery summaries.  Mean time is first averaged within each
+seed over recovered atoms; ranges pool recovered atom--seed pairs.}
+\begin{tabular}{llrrr}
+\toprule
+Method & $\alpha$ & recovered fraction & mean recovery time & pooled range \\
+\midrule
+Alt. min. & .75 & $1.000\pm.000$ & $17.28\pm5.26$ & 2--58 \\
+Alt. min. & 1.00 & $.975\pm.056$ & $24.11\pm7.37$ & 1--79 \\
+Alt. min. & 1.25 & $.900\pm.084$ & $32.95\pm11.69$ & 1--113 \\
+MSP       & 1.00 & $1.000\pm.000$ & $2.83\pm.29$ & 1--6 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=0.98\linewidth]{dl_part4_ordering.png}
+  \caption{Alternating-minimization recovery times.  Red triangles are atoms
+  not recovered within 120 blocks.}
+\end{figure}
+
+At $\alpha=1$, MSP recovers all 80 atom--seed pairs within six iterations and
+shows little persistent ordering by energy.  Unlike coordinate inference and
+a gradual dictionary gradient step in alternating minimization, MSP applies a
+fourth-moment stretch followed by a polar projection, updating the entire
+orthogonal basis jointly.  This global coupled projection rapidly enters its
+local recovery phase and largely removes the slow, coordinate-by-coordinate
+spectral ordering.
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=0.82\linewidth]{dl_part4_algorithm.png}
+  \caption{Identical $\alpha=1$ data and initializations: alternating
+  minimization (left) versus MSP (right).}
+\end{figure}
+
+\section{Reproducibility and limitations}
+
+All required dimensions satisfy $D\le64$, $m\le256$, and $N\le20000$.
+Random seeds, configurations, stopping states, censored/capped flags, and
+per-seed measurements are stored in JSONL logs.  The main limitations are the
+short floor-limited transient in Part 1(a), unstable eval-excess extrapolation
+in Part 1(b), finite-sample and algorithm dependence of the observed Part 2
+transition, and 15 capped MNIST N-axis runs.  These caveats are retained rather
+than silently filtering runs.
+
+\section{AI usage disclosure}
+
+I used an OpenAI coding assistant through the Pi coding-agent interface to
+help inspect the assignment, audit the experimental plan, implement and review
+NumPy experiment code, diagnose the local Python/LAPACK environment, run the
+experiments, check plots and logs, and prepare a draft of this report.  The
+assistant also helped identify and correct issues including the sign of the
+Bernoulli--Gaussian excess kurtosis, the orthogonal reparameterization at
+$\theta=1$, inverse-whitening of atoms, stationarity-based stopping, and
+continuing Part 2 runs beyond the first-passage time before evaluating loss.
+All numerical claims in this document come from the repository's saved logs
+and reproducible scripts.  \todo{Before submission, personally verify the
+code, figures, derivations, wording, repository URL, and that this disclosure
+accurately describes your use and understanding.}
+
+\end{document}
